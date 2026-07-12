@@ -24,7 +24,7 @@
   .progress-fill { height: 100%; background: #ff00cc; box-shadow: 0 0 8px #ff00cc; transition: width 1s linear; }
   #cycle-bar { position: fixed; bottom: 3px; left: 0; height: 2px; background: rgba(255,255,255,0.12); z-index: 10; transition: width 1s linear; }
   #slogan-wrap { position: fixed; inset: 0; z-index: 20; display: flex; pointer-events: none; opacity: 0; transition: opacity 0.25s; }
-  #slogan { font-family: 'Share Tech Mono', monospace; font-weight: 900; letter-spacing: 0.12em; text-align: center; text-transform: uppercase; padding: 0.4em 1em; line-height: 1.15; color: #fff; text-shadow: 0 0 40px currentColor, 0 0 80px currentColor, 0 0 120px currentColor; position: absolute; max-width: 70vw; word-break: break-word; }
+  #slogan { font-family: 'Share Tech Mono', monospace; font-weight: 900; letter-spacing: 0.10em; text-align: center; text-transform: uppercase; line-height: 1.2; color: #fff; text-shadow: 0 0 40px currentColor, 0 0 80px currentColor, 0 0 120px currentColor; position: absolute; max-width: 60vw; white-space: normal; }
 </style>
 </head>
 <body>
@@ -710,17 +710,27 @@ function glitchText(el, finalText, duration) {
 function showSlogan() {
   const text = pickSlogan();
   const color = SLOGAN_COLORS[Math.floor(Math.random()*SLOGAN_COLORS.length)];
-  const sizes = ['clamp(1.2rem,2.8vw,3.5rem)', 'clamp(1.8rem,4vw,4.5rem)', 'clamp(2.2rem,5.5vw,7rem)'];
+  const sizes = ['clamp(1.4rem,3vw,3.5rem)', 'clamp(1.8rem,3.8vw,4.5rem)', 'clamp(2rem,4.8vw,5.5rem)'];
   const size = sizes[Math.floor(Math.random()*sizes.length)];
-  // position: keep 15% margin from each edge so text doesn't clip
-  const left = 15 + Math.random()*70;
-  const top  = 15 + Math.random()*70;
+
   sloganEl.style.fontSize = size;
   sloganEl.style.color = color;
   sloganEl.style.textShadow = `0 0 30px ${color}, 0 0 60px ${color}, 0 0 100px ${color}`;
-  sloganEl.style.left = left+'%';
-  sloganEl.style.top  = top+'%';
-  sloganEl.style.transform = 'translate(-50%,-50%)';
+  // place offscreen first to measure
+  sloganEl.style.left = '0px';
+  sloganEl.style.top = '0px';
+  sloganEl.style.transform = 'none';
+  sloganEl.textContent = text;
+
+  // measure, then position so it stays fully on screen
+  const r = sloganEl.getBoundingClientRect();
+  const maxX = window.innerWidth  - r.width  - 20;
+  const maxY = window.innerHeight - r.height - 20;
+  const px = 20 + Math.random() * Math.max(0, maxX - 20);
+  const py = 20 + Math.random() * Math.max(0, maxY - 20);
+  sloganEl.style.left = px + 'px';
+  sloganEl.style.top  = py + 'px';
+
   sloganEl.textContent = '';
   sloganWrap.style.transition = 'opacity 0.25s';
   sloganWrap.style.opacity = '1';
