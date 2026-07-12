@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Party Pi — TV</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Share Tech Mono', monospace; background: #000; color: #fff; height: 100vh; overflow: hidden; }
+  #bg { position: fixed; inset: 0; background-size: cover; background-position: center; filter: blur(60px) brightness(0.15) saturate(2); transform: scale(1.1); transition: background-image 1.5s ease; z-index: 0; }
+  #viz { position: fixed; inset: 0; z-index: 1; }
+  #viz2 { position: fixed; inset: 0; z-index: 2; opacity: 0; }
+  .center { position: fixed; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+  #album-art { width: min(26vh,260px); height: min(26vh,260px); object-fit: cover; border-radius: 6px; box-shadow: 0 0 60px rgba(255,0,200,0.6), 0 0 120px rgba(255,0,200,0.2), 0 10px 40px #000; display: none; }
+  #track-name { margin-top: 18px; font-size: clamp(1.8rem,4.5vw,5rem); font-weight: 700; letter-spacing: 0.05em; color: #fff; text-shadow: 0 0 30px rgba(255,0,200,0.8), 0 2px 20px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 75vw; text-align: center; }
+  #track-artist { margin-top: 6px; font-size: clamp(1rem,2.2vw,2.2rem); color: #ff00cc; letter-spacing: 0.18em; text-transform: uppercase; text-shadow: 0 0 15px rgba(255,0,200,0.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 75vw; text-align: center; }
+  #track-name.idle { color: #222; font-size: clamp(1rem,2.5vw,2rem); letter-spacing: 0.3em; }
+  #mic-btn { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 10; padding: 12px 28px; background: rgba(0,0,0,0.85); border: 1px solid #ff00cc; border-radius: 2px; color: #ff00cc; font-family: inherit; font-size: 0.8rem; letter-spacing: 0.15em; text-transform: uppercase; cursor: pointer; transition: all 0.2s; }
+  #mic-btn:hover { background: rgba(255,0,200,0.15); }
+  #mic-btn.hidden { display: none; }
+  #mode-label { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 10; color: #333; font-size: 0.7rem; letter-spacing: 0.3em; text-transform: uppercase; transition: opacity 1s; }
+  .progress-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 3px; background: #111; z-index: 10; }
+  .progress-fill { height: 100%; background: #ff00cc; box-shadow: 0 0 8px #ff00cc; transition: width 1s linear; }
+  #cycle-bar { position: fixed; bottom: 3px; left: 0; height: 2px; background: rgba(255,255,255,0.12); z-index: 10; transition: width 1s linear; }
+  #slogan-wrap { position: fixed; inset: 0; z-index: 20; display: flex; pointer-events: none; opacity: 0; transition: opacity 0.25s; }
+  #slogan { font-family: 'Share Tech Mono', monospace; font-weight: 900; letter-spacing: 0.12em; text-align: center; text-transform: uppercase; padding: 0.4em 1em; line-height: 1.15; color: #fff; text-shadow: 0 0 40px currentColor, 0 0 80px currentColor, 0 0 120px currentColor; position: absolute; max-width: 85vw; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<canvas id="viz"></canvas>
+<canvas id="viz2"></canvas>
+<div class="center">
+  <img id="album-art" src="" alt="">
+  <div id="track-name" class="idle">⚡ PARTY PI ⚡</div>
+  <div id="track-artist"></div>
+</div>
+<button id="mic-btn" onclick="startMic()">🎤 MIKROFON AKTIVIEREN</button>
+<div id="mode-label"></div>
+<div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+<div id="cycle-bar" style="width:0%"></div>
+<div id="slogan-wrap"><div id="slogan"></div></div>
+
+<script>
+// ── Canvas setup ──────────────────────────────────────────────────────────────
+const c1 = document.getElementById('viz');
+const c2 = document.getElementById('viz2');
+const x1 = c1.getContext('2d');
+const x2 = c2.getContext('2d');
+
+function resize() {
+  c1.width = c2.width = window.innerWidth;
+  c1.height = c2.height = window.innerHeight;
+}
+window.addEventListener('resize', resize); resize();
+
+// ── Web Audio ─────────────────────────────────────────────────────────────────
+let analyser = null;
+let rawFreq = new Uint8Array(128);
+
+async function startMic() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+    const ac = new (window.AudioContext||window.webkitAudioContext)();
+    const src = ac.createMediaStreamSource(stream);
+    analyser = ac.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.80;
+    src.connect(analyser);
+    rawFreq = new Uint8Array(analyser.frequencyBinCount);
+    document.getElementById('mic-btn').classList.add('hidden');
+  } catch(e) {
+    document.getElementById('mic-btn').textContent = '⚠ KEIN ZUGRIFF — nochmal versuchen';
+  }
+}
+
+function getRaw() {
+  if (analyser) { analyser.getByteFrequencyData(rawFreq); return Array.from(rawFreq).map(v=>v/255); }
+  const t = performance.now()/1000;
+  return Array.from({length:128},(_,i)=>(Math.sin(t*0.4+i*0.25)*0.5+0.5)*0.06);
+}
+
+// spread useful bins (first 55%) symmetrically over N slots → all 360°
+function spr(fft, n) {
+  const u = Math.floor(fft.length*0.55);
+  return Array.from({length:n},(_,i)=>{
+    const t = i<n/2 ? i/(n/2) : 1-(i-n/2)/(n/2);
+    return fft[Math.floor(t*u)];
+  });
+}
+
+// ── Palette ───────────────────────────────────────────────────────────────────
+const PAL = ['#ff00cc','#cc00ff','#00ccff','#00ffcc','#ff6600','#ffcc00','#ff0066','#00ff66','#6600ff','#ff3300','#00ff99','#ff9900'];
+function col(i,a,pal=PAL) {
+  const c = pal[Math.floor(Math.abs(i))%pal.length];
+  if (a==null) return c;
+  const r=parseInt(c.slice(1,3),16),g=parseInt(c.slice(3,5),16),b=parseInt(c.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ── Mode list ─────────────────────────────────────────────────────────────────
+const MODES = ['mirror','bars','lasers','circle','tunnel','storm','grid','aurora','vortex'];
+const MODE_NAMES = {
+  mirror:'MIRROR', bars:'BARS', lasers:'LASER', circle:'KREIS',
+  tunnel:'TUNNEL', storm:'STORM', grid:'GRID', aurora:'AURORA', vortex:'VORTEX'
+};
+let modeIdx = 0;
+let currentMode = MODES[0];
+let nextMode = null;
+let blend = 0;          // 0..1 transition progress
+const MODE_SEC = 10;    // seconds per mode
+const TRANS_SEC = 2.5;  // crossfade duration
+let modeClock = 0;      // seconds into current mode
+let lastT = null;
+
+// ── Shared state ──────────────────────────────────────────────────────────────
+let laserOff = 0, circRot = 0, tunnelZ = 0, stormT = 0, gridT = 0, auroraT = 0, vortexT = 0;
+
+// Storm particles
+const PARTICLES = Array.from({length:400},()=>({x:0,y:0,vx:0,vy:0,life:0,maxLife:0,ci:0,size:0}));
+
+// ── MIRROR ────────────────────────────────────────────────────────────────────
+function drawMirror(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.15)'; ctx.fillRect(0,0,W,H);
+  const n=fft.length,bw=W/n,maxH=H*0.46;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+
+  for (let i=0;i<n;i++) {
+    const amp=fft[i],bh=amp*maxH,x=i*bw;
+    const gB=ctx.createLinearGradient(x,H,x,H-bh);
+    gB.addColorStop(0,col(i,0.04)); gB.addColorStop(0.5,col(i,0.6)); gB.addColorStop(1,col(i,0.95));
+    ctx.fillStyle=gB; ctx.fillRect(x,H-bh,bw-1,bh);
+    const gT=ctx.createLinearGradient(x,0,x,bh);
+    gT.addColorStop(0,col(i,0.95)); gT.addColorStop(0.5,col(i,0.6)); gT.addColorStop(1,col(i,0.04));
+    ctx.fillStyle=gT; ctx.fillRect(x,0,bw-1,bh);
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=28;
+    ctx.fillStyle=`rgba(255,255,255,${Math.min(1,amp*1.2)})`;
+    ctx.fillRect(x,H-bh-2,bw-1,3); ctx.fillRect(x,bh,bw-1,3);
+    ctx.shadowBlur=0;
+  }
+  const S=80,sp=spr(fft,S),cx=W/2,cy=H/2;
+  for (let i=0;i<S;i++) {
+    const amp=sp[i]; if(amp<0.04) continue;
+    const angle=(i/S)*Math.PI*2;
+    const len=amp*Math.min(W,H)*0.7;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+    ctx.strokeStyle=col(i,amp*0.65); ctx.lineWidth=1;
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*25; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+  const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*110+10);
+  gr.addColorStop(0,`rgba(255,255,255,${bass*0.9})`); gr.addColorStop(0.4,col(0,bass*0.5)); gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(cx,cy,bass*110+10,0,Math.PI*2); ctx.fill();
+}
+
+// ── BARS ──────────────────────────────────────────────────────────────────────
+function drawBars(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.15)'; ctx.fillRect(0,0,W,H);
+  const n=fft.length,bw=W/n,cx=W/2,cy=H/2;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const mid=fft.slice(8,30).reduce((a,b)=>a+b,0)/22;
+  const hi=fft.slice(30,60).reduce((a,b)=>a+b,0)/30;
+
+  for (let i=0;i<n;i++) {
+    const amp=fft[i],bh=amp*H*0.78,x=i*bw;
+    const g=ctx.createLinearGradient(x,H,x,H-bh);
+    g.addColorStop(0,col(i,0.04)); g.addColorStop(0.5,col(i,0.65)); g.addColorStop(1,col(i,0.95));
+    ctx.fillStyle=g; ctx.fillRect(x,H-bh,bw-1,bh);
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=28;
+    ctx.fillStyle=`rgba(255,255,255,${Math.min(1,amp*1.2)})`;
+    ctx.fillRect(x,H-bh-2,bw-1,3);
+    const gR=ctx.createLinearGradient(x,0,x,bh*0.38);
+    gR.addColorStop(0,col(i,amp*0.8)); gR.addColorStop(1,col(i,0));
+    ctx.fillStyle=gR; ctx.fillRect(x,0,bw-1,bh*0.38);
+    ctx.shadowBlur=0;
+  }
+  const beams=[
+    {y:cy,amp:bass,ci:0},{y:cy-H*0.17*mid,amp:mid*0.9,ci:2},{y:cy+H*0.17*mid,amp:mid*0.9,ci:4},
+    {y:cy-H*0.32*hi,amp:hi*0.7,ci:6},{y:cy+H*0.32*hi,amp:hi*0.7,ci:8},
+    {y:cy-H*0.46*hi,amp:hi*0.4,ci:10},{y:cy+H*0.46*hi,amp:hi*0.4,ci:1},
+  ];
+  for (const b of beams) {
+    if(b.amp<0.04) continue;
+    for (let p=0;p<4;p++) {
+      const ext=b.amp*(W*0.52+p*W*0.14);
+      ctx.beginPath(); ctx.moveTo(cx-ext,b.y); ctx.lineTo(cx+ext,b.y);
+      ctx.strokeStyle=col(b.ci+p,b.amp*(0.9-p*0.2)); ctx.lineWidth=Math.max(0.5,b.amp*(7-p*1.5));
+      ctx.shadowColor=PAL[(b.ci+p)%PAL.length]; ctx.shadowBlur=b.amp*45; ctx.stroke();
+    }
+  }
+  ctx.shadowBlur=0;
+  const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*120+12);
+  gr.addColorStop(0,`rgba(255,255,255,${bass*0.85})`); gr.addColorStop(0.4,col(0,bass*0.5)); gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(cx,cy,bass*120+12,0,Math.PI*2); ctx.fill();
+}
+
+// ── LASERS ────────────────────────────────────────────────────────────────────
+function drawLasers(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.07)'; ctx.fillRect(0,0,W,H);
+  const cx=W/2,cy=H/2,bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const S=64,sp=spr(fft,S);
+
+  // 3 rotating spoke passes — shadowBlur only on pass 0 (closest, most visible)
+  for (let p=0;p<3;p++) {
+    const rot=laserOff*(p%2===0?1:-1.4)+p*0.12;
+    if(p===0) { ctx.shadowBlur=20; }
+    for (let i=0;i<S;i++) {
+      const amp=sp[i]; if(amp<0.05) continue;
+      const angle=(i/S)*Math.PI*2+rot;
+      const len=amp*Math.min(W,H)*(0.55+p*0.22);
+      ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+      ctx.strokeStyle=col(i+p*3,amp*(1.0-p*0.2)); ctx.lineWidth=Math.max(0.5,amp*(10-p*3));
+      if(p===0) ctx.shadowColor=PAL[(i+p*4)%PAL.length];
+      ctx.stroke();
+    }
+    ctx.shadowBlur=0;
+  }
+
+  // full-screen through-lines — no shadowBlur, thick+alpha is enough
+  for (let i=0;i<S;i+=4) {
+    const amp=sp[i]; if(amp<0.35) continue;
+    const angle=(i/S)*Math.PI*2+laserOff*0.7;
+    const len=Math.max(W,H)*1.6;
+    ctx.beginPath();
+    ctx.moveTo(cx+Math.cos(angle+Math.PI)*len,cy+Math.sin(angle+Math.PI)*len);
+    ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+    ctx.strokeStyle=col(i+5,amp*0.45); ctx.lineWidth=amp*5; ctx.stroke();
+  }
+
+  // orbiting dots — one shadowBlur batch
+  ctx.shadowBlur=18;
+  for (let i=0;i<24;i++) {
+    const amp=sp[Math.floor(i/24*S)]; if(amp<0.10) continue;
+    const angle=(i/24)*Math.PI*2+laserOff*2.5;
+    const r=Math.min(W,H)*0.38*amp;
+    ctx.beginPath(); ctx.arc(cx+Math.cos(angle)*r,cy+Math.sin(angle)*r,amp*8+2,0,Math.PI*2);
+    ctx.fillStyle=col(i,amp*0.95); ctx.shadowColor=PAL[i%PAL.length]; ctx.fill();
+  }
+  ctx.shadowBlur=0;
+
+  const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*280+50);
+  gr.addColorStop(0,`rgba(255,255,255,${Math.min(1,bass*1.3)})`);
+  gr.addColorStop(0.15,col(0,bass*0.9)); gr.addColorStop(0.45,col(4,bass*0.5));
+  gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(cx,cy,bass*280+50,0,Math.PI*2); ctx.fill();
+}
+
+// ── KREIS ─────────────────────────────────────────────────────────────────────
+function drawCircle(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.07)'; ctx.fillRect(0,0,W,H);
+  const cx=W/2,cy=H/2,R=Math.min(W,H)*0.3;
+  const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const S=128,sp=spr(fft,S);
+  for (let ring=0;ring<5;ring++) {
+    const Rr=R*(0.38+ring*0.26),dir=ring%2===0?1:-1,rot=circRot*(1+ring*0.45)*dir;
+    ctx.beginPath();
+    for (let i=0;i<=S;i++) {
+      const amp=sp[i%S],angle=(i/S)*Math.PI*2*dir+rot;
+      const r=Rr+amp*Rr*(2.3-ring*0.15);
+      const x=cx+Math.cos(angle)*r,y=cy+Math.sin(angle)*r;
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    ctx.closePath();
+    ctx.strokeStyle=col(ring*2,0.88); ctx.lineWidth=Math.max(1.2,5.5-ring*0.7);
+    ctx.shadowColor=PAL[(ring*2)%PAL.length]; ctx.shadowBlur=35+avg*70; ctx.stroke();
+    ctx.fillStyle=col(ring*2,avg*0.055); ctx.fill();
+  }
+  ctx.shadowBlur=0;
+  for (let i=0;i<S;i++) {
+    const amp=sp[i]; if(amp<0.07) continue;
+    const angle=(i/S)*Math.PI*2+circRot;
+    const r1=R*1.04,r2=R*(1.04+amp*2.4);
+    ctx.beginPath(); ctx.moveTo(cx+Math.cos(angle)*r1,cy+Math.sin(angle)*r1);
+    ctx.lineTo(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2);
+    ctx.strokeStyle=col(i,amp*0.95); ctx.lineWidth=amp*7+0.5;
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*50; ctx.stroke();
+    if(amp>0.22) {
+      ctx.beginPath(); ctx.arc(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2,amp*7,0,Math.PI*2);
+      ctx.fillStyle=`rgba(255,255,255,${amp*0.95})`; ctx.shadowBlur=amp*30; ctx.fill();
+    }
+  }
+  ctx.shadowBlur=0;
+  for (let i=0;i<S;i+=2) {
+    const amp=sp[i]; if(amp<0.10) continue;
+    const angle=(i/S)*Math.PI*2-circRot*1.8+Math.PI/S;
+    const r1=R*0.93,r2=R*(0.93+amp*1.6);
+    ctx.beginPath(); ctx.moveTo(cx+Math.cos(angle)*r1,cy+Math.sin(angle)*r1);
+    ctx.lineTo(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2);
+    ctx.strokeStyle=col(i+6,amp*0.75); ctx.lineWidth=amp*4;
+    ctx.shadowColor=PAL[(i+6)%PAL.length]; ctx.shadowBlur=amp*35; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+  for (let i=0;i<20;i++) {
+    const amp=sp[Math.floor(i/20*S)]; if(amp<0.28) continue;
+    const angle=(i/20)*Math.PI*2+circRot*0.6;
+    const len=Math.max(W,H)*1.1;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+    ctx.strokeStyle=col(i*2,amp*0.32); ctx.lineWidth=amp*5;
+    ctx.shadowColor=PAL[(i*2)%PAL.length]; ctx.shadowBlur=amp*55; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+  const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,R*(0.5+bass*2.0));
+  gr.addColorStop(0,`rgba(255,255,255,${Math.min(1,bass*1.2)})`);
+  gr.addColorStop(0.18,col(0,bass*0.95)); gr.addColorStop(0.45,col(4,bass*0.6));
+  gr.addColorStop(0.75,col(8,bass*0.3)); gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(cx,cy,R*(0.5+bass*2.0),0,Math.PI*2); ctx.fill();
+}
+
+// ── TUNNEL ────────────────────────────────────────────────────────────────────
+// Concentric hexagons rushing toward you
+function drawTunnel(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.12)'; ctx.fillRect(0,0,W,H);
+  const cx=W/2,cy=H/2;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
+  const S=64,sp=spr(fft,S);
+  tunnelZ = (tunnelZ+0.018+bass*0.04)%1;
+
+  const RINGS=18, SIDES=6;
+  for (let r=RINGS;r>=0;r--) {
+    const z=(r/RINGS+tunnelZ)%1;
+    const scale=Math.pow(z,2.2);
+    const size=Math.max(W,H)*scale*1.4;
+    if(size<2) continue;
+    const ci = Math.floor(r*2.5);
+    const amp = sp[r*3%S] || 0;
+    const distort = 1+amp*0.5;
+    ctx.beginPath();
+    for (let s=0;s<=SIDES;s++) {
+      const angle=(s/SIDES)*Math.PI*2-tunnelZ*Math.PI*2;
+      const bAmp=sp[(s*8)%S]||0;
+      const rx=cx+Math.cos(angle)*size*(1+bAmp*0.4)*distort;
+      const ry=cy+Math.sin(angle)*size*(1+bAmp*0.4);
+      s===0?ctx.moveTo(rx,ry):ctx.lineTo(rx,ry);
+    }
+    ctx.closePath();
+    ctx.strokeStyle=col(ci,Math.min(1,z*1.5));
+    ctx.lineWidth=Math.max(0.5,(1-z)*6+amp*4);
+    ctx.shadowColor=PAL[ci%PAL.length]; ctx.shadowBlur=(1-z)*30+amp*20; ctx.stroke();
+    if(z>0.85) { ctx.fillStyle=col(ci,avg*0.08); ctx.fill(); }
+  }
+  ctx.shadowBlur=0;
+  // center laser burst
+  for (let i=0;i<S;i+=2) {
+    const amp=sp[i]; if(amp<0.15) continue;
+    const angle=(i/S)*Math.PI*2+tunnelZ*3;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*amp*Math.min(W,H)*0.55,cy+Math.sin(angle)*amp*Math.min(W,H)*0.55);
+    ctx.strokeStyle=col(i,amp*0.9); ctx.lineWidth=amp*5;
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*40; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+  const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*200+30);
+  gr.addColorStop(0,`rgba(255,255,255,${Math.min(1,bass*1.1)})`); gr.addColorStop(0.3,col(2,bass*0.7)); gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(cx,cy,bass*200+30,0,Math.PI*2); ctx.fill();
+}
+
+// ── STORM ─────────────────────────────────────────────────────────────────────
+// Particle explosion system driven by bass beats
+function drawStorm(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.10)'; ctx.fillRect(0,0,W,H);
+  const cx=W/2,cy=H/2;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
+  const S=64,sp=spr(fft,S);
+  stormT+=0.016;
+
+  // spawn particles on bass kicks
+  if(bass>0.25) {
+    let count=Math.floor(bass*40);
+    for(let p of PARTICLES) {
+      if(p.life>0) continue;
+      if(count-->0) {
+        const angle=Math.random()*Math.PI*2;
+        const speed=2+Math.random()*8+bass*12;
+        p.x=cx; p.y=cy; p.vx=Math.cos(angle)*speed; p.vy=Math.sin(angle)*speed;
+        p.life=p.maxLife=30+Math.random()*80; p.ci=Math.floor(Math.random()*PAL.length);
+        p.size=1+Math.random()*4+bass*3;
+      } else break;
+    }
+  }
+
+  // draw & update particles
+  for(const p of PARTICLES) {
+    if(p.life<=0) continue;
+    const t=p.life/p.maxLife;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.size*t,0,Math.PI*2);
+    ctx.fillStyle=col(p.ci,t*0.9);
+    ctx.shadowColor=PAL[p.ci%PAL.length]; ctx.shadowBlur=p.size*t*8; ctx.fill();
+    // trail
+    ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p.x-p.vx*3,p.y-p.vy*3);
+    ctx.strokeStyle=col(p.ci,t*0.5); ctx.lineWidth=p.size*t*0.5; ctx.stroke();
+    p.x+=p.vx; p.y+=p.vy; p.vx*=0.97; p.vy*=0.97; p.life--;
+  }
+  ctx.shadowBlur=0;
+
+  // background spoke bursts
+  const S2=48;
+  const sp2=spr(fft,S2);
+  for(let i=0;i<S2;i++) {
+    const amp=sp2[i]; if(amp<0.08) continue;
+    const angle=(i/S2)*Math.PI*2+stormT*0.3;
+    const len=amp*Math.min(W,H)*0.85;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+    ctx.strokeStyle=col(i,amp*0.5); ctx.lineWidth=amp*3;
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*30; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+  const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*250+20);
+  gr.addColorStop(0,`rgba(255,255,255,${Math.min(1,bass*1.2)})`); gr.addColorStop(0.3,col(0,bass*0.8)); gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(cx,cy,bass*250+20,0,Math.PI*2); ctx.fill();
+}
+
+// ── GRID ──────────────────────────────────────────────────────────────────────
+// Perspective warp grid that reacts to music
+function drawGrid(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.12)'; ctx.fillRect(0,0,W,H);
+  const cx=W/2,hy=H*0.45;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
+  gridT+=0.012+bass*0.02;
+
+  const COLS=24, ROWS=20;
+  // floor grid
+  for(let r=0;r<=ROWS;r++) {
+    const z=((r/ROWS+gridT)%1);
+    const y=hy+(H-hy)*Math.pow(z,0.7);
+    const spread2=W*0.6*Math.pow(z,0.6);
+    const amp=fft[Math.floor(z*40)]||0;
+    const ci=Math.floor(r*1.5);
+    ctx.beginPath(); ctx.moveTo(cx-spread2,y); ctx.lineTo(cx+spread2,y);
+    ctx.strokeStyle=col(ci,Math.min(1,z*2)*0.8); ctx.lineWidth=Math.max(0.5,(1-z)*3+amp*5);
+    ctx.shadowColor=PAL[ci%PAL.length]; ctx.shadowBlur=(1-z)*15+amp*20; ctx.stroke();
+  }
+  for(let c=0;c<=COLS;c++) {
+    const t=c/COLS;
+    const amp=fft[Math.floor(t*50)]||0;
+    const ci=Math.floor(c*0.8);
+    ctx.beginPath();
+    // perspective: converge at horizon
+    ctx.moveTo(cx+(t-0.5)*W*1.2,H);
+    ctx.lineTo(cx+(t-0.5)*W*0.1*(1+amp*0.5),hy);
+    ctx.strokeStyle=col(ci,0.6+amp*0.3); ctx.lineWidth=Math.max(0.5,1+amp*4);
+    ctx.shadowColor=PAL[ci%PAL.length]; ctx.shadowBlur=5+amp*25; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+
+  // ceiling grid (mirrored)
+  ctx.save(); ctx.scale(1,-1); ctx.translate(0,-H);
+  const horizonFlip=H-hy;
+  for(let r=0;r<=ROWS;r++) {
+    const z=((r/ROWS+gridT*1.3)%1);
+    const y=horizonFlip+(H-horizonFlip)*Math.pow(z,0.7);
+    const sp2=W*0.6*Math.pow(z,0.6);
+    const amp=fft[Math.floor(z*40+20)%fft.length]||0;
+    const ci=Math.floor(r*1.5)+4;
+    ctx.beginPath(); ctx.moveTo(cx-sp2,y); ctx.lineTo(cx+sp2,y);
+    ctx.strokeStyle=col(ci,Math.min(1,z*2)*0.5); ctx.lineWidth=Math.max(0.5,(1-z)*2+amp*4);
+    ctx.shadowColor=PAL[ci%PAL.length]; ctx.shadowBlur=(1-z)*10+amp*15; ctx.stroke();
+  }
+  ctx.shadowBlur=0; ctx.restore();
+
+  // horizon laser flash
+  const gr=ctx.createLinearGradient(0,hy-2,0,hy+2);
+  gr.addColorStop(0,'rgba(0,0,0,0)'); gr.addColorStop(0.5,col(3,avg*0.9+bass*0.4)); gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.fillRect(0,hy-30,W,60);
+  // center core
+  const gc=ctx.createRadialGradient(cx,hy,0,cx,hy,bass*150+20);
+  gc.addColorStop(0,`rgba(255,255,255,${bass*0.9})`); gc.addColorStop(0.4,col(2,bass*0.6)); gc.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gc; ctx.beginPath(); ctx.arc(cx,hy,bass*150+20,0,Math.PI*2); ctx.fill();
+}
+
+// ── AURORA ────────────────────────────────────────────────────────────────────
+// Northern lights horizontal wave ribbons
+function drawAurora(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.10)'; ctx.fillRect(0,0,W,H);
+  auroraT+=0.008;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
+
+  const BANDS=10;
+  for(let b=0;b<BANDS;b++) {
+    const yBase=H*(0.1+b*0.085);
+    const freqBin=Math.floor(b/BANDS*fft.length*0.6);
+    const amp=fft[freqBin]||0;
+    const height=amp*H*0.25+20;
+    const ci=b*1.2;
+    const speed=0.5+b*0.3;
+
+    ctx.beginPath();
+    for(let x=0;x<=W;x+=4) {
+      const t=x/W;
+      const wave=Math.sin(t*Math.PI*4+auroraT*speed+b)*amp*H*0.12
+               + Math.sin(t*Math.PI*7+auroraT*speed*1.3)*amp*H*0.06
+               + Math.sin(t*Math.PI*2+auroraT*0.5)*H*0.03;
+      const y=yBase+wave;
+      x===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    // close the ribbon shape
+    for(let x=W;x>=0;x-=4) {
+      const t=x/W;
+      const wave=Math.sin(t*Math.PI*4+auroraT*speed+b)*amp*H*0.12
+               + Math.sin(t*Math.PI*7+auroraT*speed*1.3)*amp*H*0.06
+               + Math.sin(t*Math.PI*2+auroraT*0.5)*H*0.03;
+      ctx.lineTo(x,yBase+wave+height);
+    }
+    ctx.closePath();
+    const grad=ctx.createLinearGradient(0,yBase,0,yBase+height);
+    grad.addColorStop(0,col(ci,0)); grad.addColorStop(0.3,col(ci,amp*0.7+0.1)); grad.addColorStop(0.7,col(ci+2,amp*0.5+0.05)); grad.addColorStop(1,col(ci,0));
+    ctx.fillStyle=grad;
+    ctx.shadowColor=PAL[Math.floor(ci)%PAL.length]; ctx.shadowBlur=20+amp*40; ctx.fill();
+
+    // bright top edge
+    ctx.beginPath();
+    for(let x=0;x<=W;x+=4) {
+      const t=x/W;
+      const wave=Math.sin(t*Math.PI*4+auroraT*speed+b)*amp*H*0.12
+               + Math.sin(t*Math.PI*7+auroraT*speed*1.3)*amp*H*0.06
+               + Math.sin(t*Math.PI*2+auroraT*0.5)*H*0.03;
+      x===0?ctx.moveTo(x,yBase+wave):ctx.lineTo(x,yBase+wave);
+    }
+    ctx.strokeStyle=col(ci,Math.min(1,amp*1.3+0.2)); ctx.lineWidth=1.5+amp*3;
+    ctx.shadowBlur=amp*30; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+
+  // vertical laser columns at loud points
+  for(let i=0;i<12;i++) {
+    const amp=fft[Math.floor(i/12*fft.length*0.5)]||0; if(amp<0.25) continue;
+    const x=W*(i/12);
+    const g=ctx.createLinearGradient(x,0,x,H);
+    g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(0.5,col(i,amp*0.6)); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*30;
+    ctx.fillRect(x-amp*8,0,amp*16,H);
+  }
+  ctx.shadowBlur=0;
+}
+
+// ── VORTEX ────────────────────────────────────────────────────────────────────
+// Spiral galaxy of dots + arms that twist with music
+function drawVortex(ctx, fft) {
+  const W=c1.width,H=c1.height;
+  ctx.fillStyle='rgba(0,0,0,0.09)'; ctx.fillRect(0,0,W,H);
+  const cx=W/2,cy=H/2,R=Math.min(W,H)*0.47;
+  const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
+  const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
+  vortexT+=0.01+bass*0.03;
+
+  const ARMS=5, DOTS=120;
+  for(let arm=0;arm<ARMS;arm++) {
+    const armOff=(arm/ARMS)*Math.PI*2;
+    for(let d=0;d<DOTS;d++) {
+      const t=d/DOTS;
+      const angle=armOff+t*Math.PI*6+vortexT*(1+arm*0.2);
+      const r=t*R;
+      const freqIdx=Math.floor(t*fft.length*0.55);
+      const amp=fft[freqIdx]||0;
+      const flutter=amp*20*Math.sin(t*Math.PI*4+vortexT*3);
+      const x=cx+Math.cos(angle)*(r+flutter);
+      const y=cy+Math.sin(angle)*(r+flutter);
+      const size=Math.max(0.5,(1-t)*5+amp*8)*0.8;
+      const ci=arm*2+Math.floor(t*6);
+      ctx.beginPath(); ctx.arc(x,y,size,0,Math.PI*2);
+      ctx.fillStyle=col(ci,Math.min(1,(1-t)*0.8+amp*0.6));
+      ctx.shadowColor=PAL[ci%PAL.length]; ctx.shadowBlur=size*4+amp*15; ctx.fill();
+    }
+    // bright arm line
+    ctx.beginPath();
+    for(let d=0;d<DOTS;d++) {
+      const t=d/DOTS;
+      const angle=armOff+t*Math.PI*6+vortexT*(1+arm*0.2);
+      const r=t*R;
+      const amp=fft[Math.floor(t*fft.length*0.55)]||0;
+      const flutter=amp*20*Math.sin(t*Math.PI*4+vortexT*3);
+      const x=cx+Math.cos(angle)*(r+flutter);
+      const y=cy+Math.sin(angle)*(r+flutter);
+      d===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle=col(arm*2,0.4); ctx.lineWidth=1.5;
+    ctx.shadowColor=PAL[(arm*2)%PAL.length]; ctx.shadowBlur=15+avg*30; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+
+  // outer ring explosions
+  const S=64,sp=spr(fft,S);
+  for(let i=0;i<S;i+=2) {
+    const amp=sp[i]; if(amp<0.2) continue;
+    const angle=(i/S)*Math.PI*2+vortexT*0.5;
+    const r1=R*0.9,r2=R*(0.9+amp*0.7);
+    ctx.beginPath(); ctx.moveTo(cx+Math.cos(angle)*r1,cy+Math.sin(angle)*r1);
+    ctx.lineTo(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2);
+    ctx.strokeStyle=col(i,amp*0.9); ctx.lineWidth=amp*5;
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*35; ctx.stroke();
+  }
+  ctx.shadowBlur=0;
+
+  // center supernova
+  const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*220+25);
+  gr.addColorStop(0,`rgba(255,255,255,${Math.min(1,bass*1.2)})`);
+  gr.addColorStop(0.2,col(0,bass*0.9)); gr.addColorStop(0.5,col(5,bass*0.5)); gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(cx,cy,bass*220+25,0,Math.PI*2); ctx.fill();
+}
+
+// ── Draw dispatch ─────────────────────────────────────────────────────────────
+const DRAWFN = { mirror:drawMirror, bars:drawBars, lasers:drawLasers, circle:drawCircle, tunnel:drawTunnel, storm:drawStorm, grid:drawGrid, aurora:drawAurora, vortex:drawVortex };
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+function render(ts) {
+  requestAnimationFrame(render);
+  if(!lastT) lastT=ts;
+  const dt=Math.min((ts-lastT)/1000,0.05);
+  lastT=ts;
+
+  laserOff+=0.003; circRot+=0.004;
+
+  const fft=getRaw();
+  modeClock+=dt;
+
+  // trigger transition
+  if(modeClock>=MODE_SEC && !nextMode) {
+    modeIdx=(modeIdx+1)%MODES.length;
+    nextMode=MODES[modeIdx];
+    blend=0;
+    // reset storm particles for clean entry
+    for(const p of PARTICLES) p.life=0;
+    // show label
+    const lbl=document.getElementById('mode-label');
+    lbl.textContent=MODE_NAMES[nextMode]; lbl.style.opacity='1';
+    setTimeout(()=>lbl.style.opacity='0',2000);
+  }
+
+  if(nextMode) {
+    blend=Math.min(1,blend+dt/TRANS_SEC);
+    // draw current into c1
+    (DRAWFN[currentMode]||drawMirror)(x1,fft);
+    // draw next into c2 (clear first)
+    x2.clearRect(0,0,c2.width,c2.height);
+    (DRAWFN[nextMode]||drawMirror)(x2,fft);
+    c2.style.opacity=blend;
+    if(blend>=1) {
+      currentMode=nextMode; nextMode=null;
+      modeClock=0; blend=0;
+      c2.style.opacity=0;
+      // reset storm particles
+      for(const p of PARTICLES) p.life=0;
+    }
+  } else {
+    (DRAWFN[currentMode]||drawMirror)(x1,fft);
+  }
+
+  // cycle indicator bar
+  const pct=Math.min(100,(modeClock/MODE_SEC)*100);
+  document.getElementById('cycle-bar').style.width=pct+'%';
+}
+requestAnimationFrame(render);
+
+// show initial mode name
+const lbl=document.getElementById('mode-label');
+lbl.textContent=MODE_NAMES[currentMode]; lbl.style.opacity='1';
+setTimeout(()=>lbl.style.opacity='0',2000);
+
+// ── Player ────────────────────────────────────────────────────────────────────
+async function fetchPlayer() {
+  try {
+    const r=await fetch('/api/player'); if(!r.ok) return;
+    const d=await r.json();
+    if(!d.ok||!d.track) {
+      document.getElementById('track-name').textContent='⚡ PARTY PI ⚡';
+      document.getElementById('track-name').className='idle';
+      document.getElementById('track-artist').textContent='';
+      document.getElementById('album-art').style.display='none';
+      document.getElementById('bg').style.backgroundImage='';
+      return;
+    }
+    document.getElementById('track-name').textContent=d.track;
+    document.getElementById('track-name').className='';
+    document.getElementById('track-artist').textContent=d.artist;
+    if(d.album_art) {
+      const art=document.getElementById('album-art');
+      art.src=d.album_art; art.style.display='block';
+      document.getElementById('bg').style.backgroundImage=`url(${d.album_art})`;
+    }
+    document.getElementById('progress-fill').style.width=(d.duration?d.progress/d.duration*100:0)+'%';
+  } catch(e) {}
+}
+fetchPlayer(); setInterval(fetchPlayer,5000);
+
+// ── Slogans ───────────────────────────────────────────────────────────────────
+const SLOGANS = ["DER KICK MUSS WEH TUN","WER HAT NOCH TEILE?","KETA WAR KEINE GUTE IDEE","KETA WAR EINE GUTE IDEE","PUPILLEN AUF ANSCHLAG","DAS TEIL HAT ANDERE PLÄNE","HALBE REICHT. SAGTEN SIE.","DIE ANDERE HÄLFTE WAR EIN FEHLER","NACHLEGEN IST AUCH KEINE LÖSUNG","NACHLEGEN WAR DIE LÖSUNG","WER HAT MEINE KIEFERMUSKULATUR?","MEIN KIEFER HAT EIN EIGENLEBEN","DIE WAND ATMET","DER BODEN IST VERDÄCHTIG WEICH","KURZ MAL AUFS KLO","SEIT 45 MINUTEN AUFS KLO","NUR EIN KLEINER DIP","ZU TIEF GEDIPPT","KETAMINUTE","KETAMORPHOSE","KETASTROPHE","KETAMORGEN","KETAMONTAG","KETAMINIMAL","KETAMAXIMAL","PFERDE WÜRDEN DAS NICHT TUN","VÖLLIG AUS DEM SATTEL","DER BODEN KOMMT NÄHER","ICH BIN GERADE SEHR HORIZONTAL","STEHEN IST ÜBERBEWERTET","SCHWERKRAFT AUF 200 PROZENT","MEINE BEINE SIND IM FLUGMODUS","KÖRPER ANWESEND","GEIST AUF AFTERHOUR","GEHIRN VERLÄSST DIE VERANSTALTUNG","ICH BIN NUR KURZ WEG","KOMME GLEICH WIEDER KLAR","KLARKOMMEN FEHLGESCHLAGEN","REALITÄT VERZÖGERT SICH","AUDIO UND VIDEO NICHT SYNCHRON","MEINE AUGEN HABEN 4K","DIE MUSIK SCHMECKT KOMISCH","WER HAT DIE REALITÄT VERBOGEN?","DAS WAR VOR DEM NACHTISCH","NACHTISCH WAR EIN FEHLER","FRÜHSTÜCK IST NOCH WEIT WEG","AFTERHOUR IST AUCH EINE MAHLZEIT","WASSER IST JETZT PREMIUM","TRINK WAS, DU TIER","KIEFER LOCKER","PUPILLEN SAGEN JA","DAS GESICHT SAGT MONTAG","KEINER HIER IST FAHRTÜCHTIG","TAXI IST EIN PROBLEM FÜR SPÄTER","DER UBER-FAHRER WIRD FRAGEN HABEN","BITTE NICHT DIE ELTERN ANRUFEN","MAMA, ICH BIN BEI FREUNDEN","DAS BLEIBT AUS DEM FAMILIENCHAT","KEINE STORY DAVON","HANDY WEG. BEWEISE VERMEIDEN.","DAS VIDEO MORGEN LÖSCHEN","NICHT ZOOMEN","NICHT IN DEN SPIEGEL GUCKEN","DER SPIEGEL LÜGT","DIE PUPILLEN LÜGEN NICHT","EINE HÄLFTE ZU VIEL","EINE HÄLFTE ZU WENIG","MATHE WAR NIE UNSERE STÄRKE","DOSIERUNG NACH GEFÜHL","GEFÜHL WAR FALSCH","DAS KAM JETZT SCHNELL","OH. DA IST ES.","JETZT WIRKT'S","JETZT WIRKT'S ZU SEHR","ICH GLAUBE DAS KOMMT NOCH","ES KAM.","KOMPLETT VERSCHOBEN","CHEMISCH ENTKOPPELT","PHARMAZEUTISCH FRAGWÜRDIG","MOLEKULAR ESKALIERT","SYNAPSEN IM CLUBBETRIEB","SEROTONIN AUF PUMP","DOPAMIN IM DISPO","MONTAG ZAHLEN WIR ZURÜCK","GLÜCK AUF KREDIT","EMOTIONALE INSOLVENZ AM MONTAG","HEUTE EUPHORIE. MORGEN BÜRO.","DER COMEDOWN WIRD PERSÖNLICH","MONTAG WIRD EKELHAFT","MORGEN HASST UNS","ZUKUNFTS-ICH WIRD SAUER","ZUKUNFTS-ICH IST NICHT EINGELADEN","KATER IST EIN PROBLEM FÜR MORGEN","AFTERHOUR STATT THERAPIE","THERAPIE NACH DER AFTERHOUR","NOCH NICHT NÜCHTERN GENUG FÜR REUE","ZU DRUFF FÜR SMALLTALK","ZU DRUFF FÜR DIE GARDEROBE","ZU DRUFF FÜR DIE PIN","WER HAT MEINE JACKE?","WER HAT MEIN HANDY?","WER BIST DU?","KENNEN WIR UNS?","JETZT SCHON.","BESTE FREUNDE SEIT 04:37","ICH LIEBE EUCH ALLE","DU BIST SO EIN GUTER MENSCH","BRUDER, WIR MÜSSEN MAL REDEN","DIESE FREUNDSCHAFT HÄLT BIS SONNENAUFGANG","EMOTIONALE AFTERHOUR","KUSCHELN IM INDUSTRIEGEBIET","ROMANTIK IM RAUCHERBEREICH","LIEBE AUF 145 BPM","BEZIEHUNGSSTATUS: DRUFF","DAS TEIL LIEBT DICH AUCH","UMARM MICH NICHT SO FEST","OKAY, DOCH.","ICH MUSS DIR WAS SAGEN","ICH HAB VERGESSEN WAS","DER SATZ WAR GERADE NOCH DA","GEDANKE ABGEBROCHEN","BUFFERING...","GEHIRN LÄDT","GEHIRN NICHT ERREICHBAR","SYNAPSEN MACHEN AFTERHOUR","REALITÄT HAT SCHICHTWECHSEL","ICH BIN GLEICH WIEDER ICH","WER WAR ICH NOCH MAL?","DAS IST ALLES SEHR DREIDIMENSIONAL","WAR DER RAUM SCHON IMMER SO GROSS?","WAR DIE TOILETTE SCHON IMMER SO WEIT?","DER WEG ZUM KLO IST EIN SIDEQUEST","HAUPTQUEST VERGESSEN","SIDEQUEST: WASSER FINDEN","ENDGEGNER: TREPPE","BOSSFIGHT: GARDEROBE","FAST TRAVEL NICHT VERFÜGBAR","RESPAWN AM DANCEFLOOR","CHECKPOINT VERPASST","AUTOSAVE VOR DREI STUNDEN","DIESER RUN IST VERLOREN","NEUES LEBEN NACH DER AFTERHOUR","KETA UND KONTEXTVERLUST","TEILE UND TEILNAHMSLOSIGKEIT","DRAUF. DRIN. DANEBEN.","DICHTER ALS DER NEBEL","NEBELMASCHINE IST NICHT DAS PROBLEM","DER RAUCH KOMMT NICHT NUR VON DER MASCHINE","KOMPLETT AUS DER UMLAUFBAHN","ORBIT VERLASSEN","BODENKONTAKT OPTIONAL","KONTROLLVERLUST MIT ANSAGE","SCHMUTZ. DRUCK. SUBSTANZ.","BASS. TEILE. KONTROLLVERLUST.","TECHNO UND FEHLENTSCHEIDUNGEN","DIE NACHT IST NOCH JUNG. WIR NICHT.","NÜCHTERN WAR DER PLAN","DER PLAN HAT NICHT LANGE GEHALTEN","DAS ESKALIERTE CHEMISCH","HEUTE WIRD NICHT GETESTET","MENSCHENVERSUCH LÄUFT","ERGEBNIS NICHT REPRODUZIERBAR","NEBENWIRKUNGEN: TECHNO","ZU RISIKEN UND NEBENWIRKUNGEN FRAG DEN DJ","DER DJ IST AUCH KEINE HILFE","DIE APOTHEKE HAT GESCHLOSSEN","DER KELLER HAT GEÖFFNET","REZEPTFREI ESKALIERT","KONSUMKOMPETENZ UNKLAR","QUALITÄTSKONTROLLE FEHLGESCHLAGEN","WIRKUNG STÄRKER ALS ERWARTET","PACKUNGSBEILAGE VERLOREN","BITTE NICHT MIT ALKOHOL MISCHEN","ZU SPÄT","EINNAHME AUF EIGENE GEFAHR","NACH DEM ÖFFNEN KOMPLETT VERBRAUCHEN","KÜHL UND DUNKEL LAGERN","WIR SIND KÜHL UND DUNKEL GELAGERT","FÜR KINDER UNZUGÄNGLICH AUFBEWAHREN","KINDER SIND HIER HOFFENTLICH KEINE","AB 18 UND ABWÄRTS","NICHT FÜR DEN STRASSENVERKEHR GEEIGNET","MASCHINEN BEDIENEN? AUF KEINEN FALL.","DIE MASCHINE BEDIENT UNS","DER SUBWOOFER HAT MICH ANGEFASST","ICH SPÜRE FARBEN","ICH HÖRE LICHT","DIE LASER SIND LAUT","DAS STROBO MACHT ZEITREISEN","ZWISCHEN ZWEI BLITZEN VERGANGEN","ZEIT IST GERADE SCHWIERIG","WELCHER TAG IST TECHNO?","IST DAS NOCH SAMSTAG?","WARUM IST ES HELL?","WER HAT DIE SONNE ANGEMACHT?","MACH DIE SONNE AUS","TAGESLICHT IST AGGRESSIV","SONNENBRILLE UM 8 UHR MORGENS","AFTERHOUR ODER OBDACHLOS?","ZU FRÜH FÜR ZUHAUSE","ZU SPÄT FÜR GESTERN","ZWISCHEN TAG UND TOTALAUSFALL","MORGEN IST BEREITS PASSIERT","DIE NACHT HAT ÜBERZOGEN","WIR HABEN ÜBERZOGEN","KONTO AUCH","WÜRDE ICH WIEDER MACHEN","WERDE ICH WIEDER MACHEN","NICHTS GELERNT","LERNKURVE FLACH","RÜCKFALLQUOTE 100 PROZENT","NÄCHSTES WOCHENENDE WIEDER","NIE WIEDER BIS FREITAG","LETZTES MAL TECHNO","DIESMAL WIRKLICH","HAHA. NEIN."];
+
+const SLOGAN_COLORS = ['#ff00cc','#cc00ff','#00ccff','#ff6600','#ffcc00','#ff0066','#00ff99','#ff3300'];
+const sloganWrap = document.getElementById('slogan-wrap');
+const sloganEl = document.getElementById('slogan');
+let sloganUsed = [];
+let sloganGlitchTimer = null;
+
+function pickSlogan() {
+  if(sloganUsed.length >= SLOGANS.length) sloganUsed = [];
+  let idx;
+  do { idx = Math.floor(Math.random()*SLOGANS.length); } while(sloganUsed.includes(idx));
+  sloganUsed.push(idx);
+  return SLOGANS[idx];
+}
+
+function glitchText(el, finalText, duration) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&?<>[]{}';
+  const steps = 14;
+  let step = 0;
+  clearInterval(sloganGlitchTimer);
+  sloganGlitchTimer = setInterval(() => {
+    step++;
+    const reveal = Math.floor((step/steps)*finalText.length);
+    el.textContent = finalText.split('').map((c,i) => {
+      if(c===' ') return ' ';
+      if(i < reveal) return c;
+      return chars[Math.floor(Math.random()*chars.length)];
+    }).join('');
+    if(step >= steps) { el.textContent = finalText; clearInterval(sloganGlitchTimer); }
+  }, duration/steps);
+}
+
+function showSlogan() {
+  const text = pickSlogan();
+  const color = SLOGAN_COLORS[Math.floor(Math.random()*SLOGAN_COLORS.length)];
+  // random font size: small / medium / large
+  const sizes = ['clamp(1.2rem,2.8vw,3.5rem)', 'clamp(1.8rem,4.5vw,5.5rem)', 'clamp(2.5rem,7vw,9rem)'];
+  const size = sizes[Math.floor(Math.random()*sizes.length)];
+  // random position: keep away from edges with margin
+  const margin = 8; // percent
+  const left = margin + Math.random()*(100-margin*2);
+  const top  = margin + Math.random()*(100-margin*2);
+  sloganEl.style.fontSize = size;
+  sloganEl.style.color = color;
+  sloganEl.style.textShadow = `0 0 30px ${color}, 0 0 60px ${color}, 0 0 100px ${color}`;
+  sloganEl.style.left = left+'%';
+  sloganEl.style.top  = top+'%';
+  sloganEl.style.transform = 'translate(-50%,-50%)';
+  sloganEl.textContent = '';
+  sloganWrap.style.transition = 'opacity 0.25s';
+  sloganWrap.style.opacity = '1';
+  glitchText(sloganEl, text, 400);
+  setTimeout(() => {
+    sloganWrap.style.transition = 'opacity 0.6s';
+    sloganWrap.style.opacity = '0';
+  }, 4500);
+}
+
+// first show after 3s, then every 10-15s random
+setTimeout(() => {
+  showSlogan();
+  function scheduleNext() {
+    const delay = 10000 + Math.random()*5000;
+    setTimeout(() => { showSlogan(); scheduleNext(); }, delay);
+  }
+  scheduleNext();
+}, 3000);
+</script>
+</body>
+</html>
