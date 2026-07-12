@@ -24,7 +24,7 @@
   .progress-fill { height: 100%; background: #ff00cc; box-shadow: 0 0 8px #ff00cc; transition: width 1s linear; }
   #cycle-bar { position: fixed; bottom: 3px; left: 0; height: 2px; background: rgba(255,255,255,0.12); z-index: 10; transition: width 1s linear; }
   #slogan-wrap { position: fixed; inset: 0; z-index: 20; display: flex; pointer-events: none; opacity: 0; transition: opacity 0.25s; }
-  #slogan { font-family: 'Share Tech Mono', monospace; font-weight: 900; letter-spacing: 0.12em; text-align: center; text-transform: uppercase; padding: 0.4em 1em; line-height: 1.15; color: #fff; text-shadow: 0 0 40px currentColor, 0 0 80px currentColor, 0 0 120px currentColor; position: absolute; max-width: 85vw; }
+  #slogan { font-family: 'Share Tech Mono', monospace; font-weight: 900; letter-spacing: 0.12em; text-align: center; text-transform: uppercase; padding: 0.4em 1em; line-height: 1.15; color: #fff; text-shadow: 0 0 40px currentColor, 0 0 80px currentColor, 0 0 120px currentColor; position: absolute; max-width: 70vw; word-break: break-word; }
 </style>
 </head>
 <body>
@@ -58,6 +58,7 @@ window.addEventListener('resize', resize); resize();
 // ── Web Audio ─────────────────────────────────────────────────────────────────
 let analyser = null;
 let rawFreq = new Uint8Array(128);
+let fftBuf = new Float32Array(128);
 
 async function startMic() {
   try {
@@ -69,6 +70,7 @@ async function startMic() {
     analyser.smoothingTimeConstant = 0.80;
     src.connect(analyser);
     rawFreq = new Uint8Array(analyser.frequencyBinCount);
+    fftBuf = new Float32Array(analyser.frequencyBinCount);
     document.getElementById('mic-btn').classList.add('hidden');
   } catch(e) {
     document.getElementById('mic-btn').textContent = '⚠ KEIN ZUGRIFF — nochmal versuchen';
@@ -76,18 +78,25 @@ async function startMic() {
 }
 
 function getRaw() {
-  if (analyser) { analyser.getByteFrequencyData(rawFreq); return Array.from(rawFreq).map(v=>v/255); }
+  if (analyser) {
+    analyser.getByteFrequencyData(rawFreq);
+    for(let i=0;i<rawFreq.length;i++) fftBuf[i]=rawFreq[i]/255;
+    return fftBuf;
+  }
   const t = performance.now()/1000;
-  return Array.from({length:128},(_,i)=>(Math.sin(t*0.4+i*0.25)*0.5+0.5)*0.06);
+  for(let i=0;i<fftBuf.length;i++) fftBuf[i]=(Math.sin(t*0.4+i*0.25)*0.5+0.5)*0.06;
+  return fftBuf;
 }
 
-// spread useful bins (first 55%) symmetrically over N slots → all 360°
+// reuse spread buffer to avoid allocations
+const _sprBuf = new Float32Array(256);
 function spr(fft, n) {
   const u = Math.floor(fft.length*0.55);
-  return Array.from({length:n},(_,i)=>{
+  for(let i=0;i<n;i++) {
     const t = i<n/2 ? i/(n/2) : 1-(i-n/2)/(n/2);
-    return fft[Math.floor(t*u)];
-  });
+    _sprBuf[i] = fft[Math.floor(t*u)];
+  }
+  return _sprBuf;
 }
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -109,7 +118,7 @@ let modeIdx = 0;
 let currentMode = MODES[0];
 let nextMode = null;
 let blend = 0;          // 0..1 transition progress
-const MODE_SEC = 10;    // seconds per mode
+let MODE_SEC = 60 + Math.random()*30;  // 60-90s random per mode
 const TRANS_SEC = 2.5;  // crossfade duration
 let modeClock = 0;      // seconds into current mode
 let lastT = null;
@@ -118,7 +127,7 @@ let lastT = null;
 let laserOff = 0, circRot = 0, tunnelZ = 0, stormT = 0, gridT = 0, auroraT = 0, vortexT = 0;
 
 // Storm particles
-const PARTICLES = Array.from({length:400},()=>({x:0,y:0,vx:0,vy:0,life:0,maxLife:0,ci:0,size:0}));
+const PARTICLES = Array.from({length:200},()=>({x:0,y:0,vx:0,vy:0,life:0,maxLife:0,ci:0,size:0}));
 
 // ── MIRROR ────────────────────────────────────────────────────────────────────
 function drawMirror(ctx, fft) {
@@ -129,25 +138,22 @@ function drawMirror(ctx, fft) {
 
   for (let i=0;i<n;i++) {
     const amp=fft[i],bh=amp*maxH,x=i*bw;
-    const gB=ctx.createLinearGradient(x,H,x,H-bh);
-    gB.addColorStop(0,col(i,0.04)); gB.addColorStop(0.5,col(i,0.6)); gB.addColorStop(1,col(i,0.95));
-    ctx.fillStyle=gB; ctx.fillRect(x,H-bh,bw-1,bh);
-    const gT=ctx.createLinearGradient(x,0,x,bh);
-    gT.addColorStop(0,col(i,0.95)); gT.addColorStop(0.5,col(i,0.6)); gT.addColorStop(1,col(i,0.04));
-    ctx.fillStyle=gT; ctx.fillRect(x,0,bw-1,bh);
-    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=28;
-    ctx.fillStyle=`rgba(255,255,255,${Math.min(1,amp*1.2)})`;
-    ctx.fillRect(x,H-bh-2,bw-1,3); ctx.fillRect(x,bh,bw-1,3);
-    ctx.shadowBlur=0;
+    ctx.fillStyle=col(i,amp*0.8);
+    ctx.fillRect(x,H-bh,bw-1,bh);
+    ctx.fillRect(x,0,bw-1,bh);
+    ctx.fillStyle=`rgba(255,255,255,${Math.min(1,amp*1.1)})`;
+    ctx.fillRect(x,H-bh-2,bw-1,2);
+    ctx.fillRect(x,bh,bw-1,2);
   }
-  const S=80,sp=spr(fft,S),cx=W/2,cy=H/2;
+  const S=64,sp=spr(fft,S),cx=W/2,cy=H/2;
+  ctx.shadowBlur=18;
   for (let i=0;i<S;i++) {
-    const amp=sp[i]; if(amp<0.04) continue;
+    const amp=sp[i]; if(amp<0.06) continue;
     const angle=(i/S)*Math.PI*2;
     const len=amp*Math.min(W,H)*0.7;
     ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
-    ctx.strokeStyle=col(i,amp*0.65); ctx.lineWidth=1;
-    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*25; ctx.stroke();
+    ctx.strokeStyle=col(i,amp*0.7); ctx.lineWidth=1;
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.stroke();
   }
   ctx.shadowBlur=0;
   const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*110+10);
@@ -166,29 +172,26 @@ function drawBars(ctx, fft) {
 
   for (let i=0;i<n;i++) {
     const amp=fft[i],bh=amp*H*0.78,x=i*bw;
-    const g=ctx.createLinearGradient(x,H,x,H-bh);
-    g.addColorStop(0,col(i,0.04)); g.addColorStop(0.5,col(i,0.65)); g.addColorStop(1,col(i,0.95));
-    ctx.fillStyle=g; ctx.fillRect(x,H-bh,bw-1,bh);
-    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=28;
-    ctx.fillStyle=`rgba(255,255,255,${Math.min(1,amp*1.2)})`;
-    ctx.fillRect(x,H-bh-2,bw-1,3);
-    const gR=ctx.createLinearGradient(x,0,x,bh*0.38);
-    gR.addColorStop(0,col(i,amp*0.8)); gR.addColorStop(1,col(i,0));
-    ctx.fillStyle=gR; ctx.fillRect(x,0,bw-1,bh*0.38);
-    ctx.shadowBlur=0;
+    ctx.fillStyle=col(i,amp*0.85);
+    ctx.fillRect(x,H-bh,bw-1,bh);
+    ctx.fillStyle=`rgba(255,255,255,${Math.min(1,amp*1.1)})`;
+    ctx.fillRect(x,H-bh-2,bw-1,2);
+    ctx.fillStyle=col(i,amp*0.5);
+    ctx.fillRect(x,0,bw-1,bh*0.38);
   }
+  ctx.shadowBlur=30;
   const beams=[
     {y:cy,amp:bass,ci:0},{y:cy-H*0.17*mid,amp:mid*0.9,ci:2},{y:cy+H*0.17*mid,amp:mid*0.9,ci:4},
     {y:cy-H*0.32*hi,amp:hi*0.7,ci:6},{y:cy+H*0.32*hi,amp:hi*0.7,ci:8},
     {y:cy-H*0.46*hi,amp:hi*0.4,ci:10},{y:cy+H*0.46*hi,amp:hi*0.4,ci:1},
   ];
   for (const b of beams) {
-    if(b.amp<0.04) continue;
-    for (let p=0;p<4;p++) {
-      const ext=b.amp*(W*0.52+p*W*0.14);
+    if(b.amp<0.05) continue;
+    for (let p=0;p<3;p++) {
+      const ext=b.amp*(W*0.52+p*W*0.15);
       ctx.beginPath(); ctx.moveTo(cx-ext,b.y); ctx.lineTo(cx+ext,b.y);
-      ctx.strokeStyle=col(b.ci+p,b.amp*(0.9-p*0.2)); ctx.lineWidth=Math.max(0.5,b.amp*(7-p*1.5));
-      ctx.shadowColor=PAL[(b.ci+p)%PAL.length]; ctx.shadowBlur=b.amp*45; ctx.stroke();
+      ctx.strokeStyle=col(b.ci+p,b.amp*(0.9-p*0.25)); ctx.lineWidth=Math.max(0.5,b.amp*(6-p*1.5));
+      ctx.shadowColor=PAL[(b.ci+p)%PAL.length]; ctx.stroke();
     }
   }
   ctx.shadowBlur=0;
@@ -256,7 +259,8 @@ function drawCircle(ctx, fft) {
   const cx=W/2,cy=H/2,R=Math.min(W,H)*0.3;
   const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
   const bass=fft.slice(0,8).reduce((a,b)=>a+b,0)/8;
-  const S=128,sp=spr(fft,S);
+  const S=64,sp=spr(fft,S);
+  ctx.shadowBlur=25+avg*50;
   for (let ring=0;ring<5;ring++) {
     const Rr=R*(0.38+ring*0.26),dir=ring%2===0?1:-1,rot=circRot*(1+ring*0.45)*dir;
     ctx.beginPath();
@@ -268,43 +272,27 @@ function drawCircle(ctx, fft) {
     }
     ctx.closePath();
     ctx.strokeStyle=col(ring*2,0.88); ctx.lineWidth=Math.max(1.2,5.5-ring*0.7);
-    ctx.shadowColor=PAL[(ring*2)%PAL.length]; ctx.shadowBlur=35+avg*70; ctx.stroke();
-    ctx.fillStyle=col(ring*2,avg*0.055); ctx.fill();
+    ctx.shadowColor=PAL[(ring*2)%PAL.length]; ctx.stroke();
+    ctx.fillStyle=col(ring*2,avg*0.04); ctx.fill();
   }
-  ctx.shadowBlur=0;
+  ctx.shadowBlur=20;
   for (let i=0;i<S;i++) {
-    const amp=sp[i]; if(amp<0.07) continue;
+    const amp=sp[i]; if(amp<0.08) continue;
     const angle=(i/S)*Math.PI*2+circRot;
     const r1=R*1.04,r2=R*(1.04+amp*2.4);
     ctx.beginPath(); ctx.moveTo(cx+Math.cos(angle)*r1,cy+Math.sin(angle)*r1);
     ctx.lineTo(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2);
-    ctx.strokeStyle=col(i,amp*0.95); ctx.lineWidth=amp*7+0.5;
-    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*50; ctx.stroke();
-    if(amp>0.22) {
-      ctx.beginPath(); ctx.arc(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2,amp*7,0,Math.PI*2);
-      ctx.fillStyle=`rgba(255,255,255,${amp*0.95})`; ctx.shadowBlur=amp*30; ctx.fill();
-    }
-  }
-  ctx.shadowBlur=0;
-  for (let i=0;i<S;i+=2) {
-    const amp=sp[i]; if(amp<0.10) continue;
-    const angle=(i/S)*Math.PI*2-circRot*1.8+Math.PI/S;
-    const r1=R*0.93,r2=R*(0.93+amp*1.6);
-    ctx.beginPath(); ctx.moveTo(cx+Math.cos(angle)*r1,cy+Math.sin(angle)*r1);
-    ctx.lineTo(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2);
-    ctx.strokeStyle=col(i+6,amp*0.75); ctx.lineWidth=amp*4;
-    ctx.shadowColor=PAL[(i+6)%PAL.length]; ctx.shadowBlur=amp*35; ctx.stroke();
+    ctx.strokeStyle=col(i,amp*0.95); ctx.lineWidth=amp*6+0.5;
+    ctx.shadowColor=PAL[i%PAL.length]; ctx.stroke();
   }
   ctx.shadowBlur=0;
   for (let i=0;i<20;i++) {
-    const amp=sp[Math.floor(i/20*S)]; if(amp<0.28) continue;
+    const amp=sp[Math.floor(i/20*S)]; if(amp<0.30) continue;
     const angle=(i/20)*Math.PI*2+circRot*0.6;
     const len=Math.max(W,H)*1.1;
     ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
-    ctx.strokeStyle=col(i*2,amp*0.32); ctx.lineWidth=amp*5;
-    ctx.shadowColor=PAL[(i*2)%PAL.length]; ctx.shadowBlur=amp*55; ctx.stroke();
+    ctx.strokeStyle=col(i*2,amp*0.30); ctx.lineWidth=amp*4; ctx.stroke();
   }
-  ctx.shadowBlur=0;
   const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,R*(0.5+bass*2.0));
   gr.addColorStop(0,`rgba(255,255,255,${Math.min(1,bass*1.2)})`);
   gr.addColorStop(0.18,col(0,bass*0.95)); gr.addColorStop(0.45,col(4,bass*0.6));
@@ -546,7 +534,6 @@ function drawAurora(ctx, fft) {
 }
 
 // ── VORTEX ────────────────────────────────────────────────────────────────────
-// Spiral galaxy of dots + arms that twist with music
 function drawVortex(ctx, fft) {
   const W=c1.width,H=c1.height;
   ctx.fillStyle='rgba(0,0,0,0.09)'; ctx.fillRect(0,0,W,H);
@@ -555,25 +542,10 @@ function drawVortex(ctx, fft) {
   const avg=fft.reduce((a,b)=>a+b,0)/fft.length;
   vortexT+=0.01+bass*0.03;
 
-  const ARMS=5, DOTS=120;
+  const ARMS=5, DOTS=60;
   for(let arm=0;arm<ARMS;arm++) {
     const armOff=(arm/ARMS)*Math.PI*2;
-    for(let d=0;d<DOTS;d++) {
-      const t=d/DOTS;
-      const angle=armOff+t*Math.PI*6+vortexT*(1+arm*0.2);
-      const r=t*R;
-      const freqIdx=Math.floor(t*fft.length*0.55);
-      const amp=fft[freqIdx]||0;
-      const flutter=amp*20*Math.sin(t*Math.PI*4+vortexT*3);
-      const x=cx+Math.cos(angle)*(r+flutter);
-      const y=cy+Math.sin(angle)*(r+flutter);
-      const size=Math.max(0.5,(1-t)*5+amp*8)*0.8;
-      const ci=arm*2+Math.floor(t*6);
-      ctx.beginPath(); ctx.arc(x,y,size,0,Math.PI*2);
-      ctx.fillStyle=col(ci,Math.min(1,(1-t)*0.8+amp*0.6));
-      ctx.shadowColor=PAL[ci%PAL.length]; ctx.shadowBlur=size*4+amp*15; ctx.fill();
-    }
-    // bright arm line
+    // arm line
     ctx.beginPath();
     for(let d=0;d<DOTS;d++) {
       const t=d/DOTS;
@@ -585,25 +557,33 @@ function drawVortex(ctx, fft) {
       const y=cy+Math.sin(angle)*(r+flutter);
       d===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
     }
-    ctx.strokeStyle=col(arm*2,0.4); ctx.lineWidth=1.5;
-    ctx.shadowColor=PAL[(arm*2)%PAL.length]; ctx.shadowBlur=15+avg*30; ctx.stroke();
+    ctx.strokeStyle=col(arm*2,0.5); ctx.lineWidth=1.5;
+    ctx.shadowColor=PAL[(arm*2)%PAL.length]; ctx.shadowBlur=12+avg*20; ctx.stroke();
+    // dots every other step
+    for(let d=0;d<DOTS;d+=2) {
+      const t=d/DOTS;
+      const angle=armOff+t*Math.PI*6+vortexT*(1+arm*0.2);
+      const r=t*R;
+      const amp=fft[Math.floor(t*fft.length*0.55)]||0;
+      const flutter=amp*20*Math.sin(t*Math.PI*4+vortexT*3);
+      const x=cx+Math.cos(angle)*(r+flutter);
+      const y=cy+Math.sin(angle)*(r+flutter);
+      const size=Math.max(0.5,(1-t)*4+amp*6)*0.8;
+      const ci=arm*2+Math.floor(t*6);
+      ctx.beginPath(); ctx.arc(x,y,size,0,Math.PI*2);
+      ctx.fillStyle=col(ci,Math.min(1,(1-t)*0.8+amp*0.6)); ctx.fill();
+    }
   }
   ctx.shadowBlur=0;
-
-  // outer ring explosions
   const S=64,sp=spr(fft,S);
   for(let i=0;i<S;i+=2) {
-    const amp=sp[i]; if(amp<0.2) continue;
+    const amp=sp[i]; if(amp<0.22) continue;
     const angle=(i/S)*Math.PI*2+vortexT*0.5;
     const r1=R*0.9,r2=R*(0.9+amp*0.7);
     ctx.beginPath(); ctx.moveTo(cx+Math.cos(angle)*r1,cy+Math.sin(angle)*r1);
     ctx.lineTo(cx+Math.cos(angle)*r2,cy+Math.sin(angle)*r2);
-    ctx.strokeStyle=col(i,amp*0.9); ctx.lineWidth=amp*5;
-    ctx.shadowColor=PAL[i%PAL.length]; ctx.shadowBlur=amp*35; ctx.stroke();
+    ctx.strokeStyle=col(i,amp*0.9); ctx.lineWidth=amp*4; ctx.stroke();
   }
-  ctx.shadowBlur=0;
-
-  // center supernova
   const gr=ctx.createRadialGradient(cx,cy,0,cx,cy,bass*220+25);
   gr.addColorStop(0,`rgba(255,255,255,${Math.min(1,bass*1.2)})`);
   gr.addColorStop(0.2,col(0,bass*0.9)); gr.addColorStop(0.5,col(5,bass*0.5)); gr.addColorStop(1,'rgba(0,0,0,0)');
@@ -630,9 +610,8 @@ function render(ts) {
     modeIdx=(modeIdx+1)%MODES.length;
     nextMode=MODES[modeIdx];
     blend=0;
-    // reset storm particles for clean entry
+    MODE_SEC = 60 + Math.random()*30;
     for(const p of PARTICLES) p.life=0;
-    // show label
     const lbl=document.getElementById('mode-label');
     lbl.textContent=MODE_NAMES[nextMode]; lbl.style.opacity='1';
     setTimeout(()=>lbl.style.opacity='0',2000);
@@ -731,13 +710,11 @@ function glitchText(el, finalText, duration) {
 function showSlogan() {
   const text = pickSlogan();
   const color = SLOGAN_COLORS[Math.floor(Math.random()*SLOGAN_COLORS.length)];
-  // random font size: small / medium / large
-  const sizes = ['clamp(1.2rem,2.8vw,3.5rem)', 'clamp(1.8rem,4.5vw,5.5rem)', 'clamp(2.5rem,7vw,9rem)'];
+  const sizes = ['clamp(1.2rem,2.8vw,3.5rem)', 'clamp(1.8rem,4vw,4.5rem)', 'clamp(2.2rem,5.5vw,7rem)'];
   const size = sizes[Math.floor(Math.random()*sizes.length)];
-  // random position: keep away from edges with margin
-  const margin = 8; // percent
-  const left = margin + Math.random()*(100-margin*2);
-  const top  = margin + Math.random()*(100-margin*2);
+  // position: keep 15% margin from each edge so text doesn't clip
+  const left = 15 + Math.random()*70;
+  const top  = 15 + Math.random()*70;
   sloganEl.style.fontSize = size;
   sloganEl.style.color = color;
   sloganEl.style.textShadow = `0 0 30px ${color}, 0 0 60px ${color}, 0 0 100px ${color}`;
